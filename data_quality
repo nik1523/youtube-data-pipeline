@@ -1,0 +1,190 @@
+"""
+DEBUG VERSION: Silver → Gold (Find the Issue)
+Your Silver data is perfect (998 records, 0 NULLs), so let's find the Glue script issue.
+"""
+
+import sys
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql import functions as F
+
+# ── Job Setup ────────────────────────────────────────────────────────────────
+args = getResolvedOptions(sys.argv, [
+    "JOB_NAME",
+    "silver_database",
+    "gold_bucket", 
+    "gold_database",
+])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args["JOB_NAME"], args)
+
+# ── Config ───────────────────────────────────────────────────────────────────
+SILVER_DB = args["silver_database"]
+SILVER_TABLE = "cleaned_statistics"
+GOLD_BUCKET = args["gold_bucket"]
+GOLD_DB = args["gold_database"]
+
+print(f"🔍 DEBUG: Starting Silver to Gold transformation...")
+print(f"📖 Silver: {SILVER_DB}.{SILVER_TABLE}")
+print(f"📝 Gold: s3://{GOLD_BUCKET}/")
+
+try:
+    # ── Step 1: Read Silver Data ────────────────────────────────────────────
+    print("📖 Reading Silver data...")
+    
+    stats_dyf = glueContext.create_dynamic_frame.from_catalog(
+        database=SILVER_DB,
+        table_name=SILVER_TABLE,
+        transformation_ctx="stats",
+    )
+    stats_df = stats_dyf.toDF()
+    
+    total_count = stats_df.count()
+    print(f"✅ Total Silver records: {total_count}")
+    
+    # ── Step 2: Show Schema and Sample ──────────────────────────────────────
+    print("📋 Silver schema:")
+    stats_df.printSchema()
+    
+    print("📊 Sample Silver data (first 3 rows):")
+    stats_df.select("region", "trending_date", "category_id", "channel_title", "video_id", "views").show(3, truncate=False)
+    
+    # ── Step 3: Test Simple Aggregation ─────────────────────────────────────
+    print("🧪 Testing simple region aggregation...")
+    
+    region_agg = stats_df.groupBy("region").agg(
+        F.count("video_id").alias("video_count"),
+        F.sum("views").alias("total_views"),
+        F.countDistinct("channel_title").alias("unique_channels")
+    )
+    
+    region_count = region_agg.count()
+    print(f"✅ Region aggregation result count: {region_count}")
+    
+    if region_count > 0:
+        print("📊 Region aggregation results:")
+        region_agg.show()
+        
+        # Write region test
+        region_path = f"s3://{GOLD_BUCKET}/debug_region_test/"
+        glueContext.write_dynamic_frame.from_options(
+            frame=DynamicFrame.fromDF(region_agg, glueContext, "region_test"),
+            connection_type="s3",
+            format="parquet",
+            connection_options={"path": region_path},
+            transformation_ctx="write_region_test"
+        )
+        print(f"✅ Region test written to: {region_path}")
+    
+    # ── Step 4: Test Trending Analytics Aggregation ────────────────────────
+    print("🧪 Testing trending analytics aggregation...")
+    
+    trending_agg = stats_df.groupBy("region", "trending_date").agg(
+        F.count("video_id").alias("total_videos"),
+        F.sum("views").alias("total_views"),
+        F.sum("likes").alias("total_likes"),
+        F.avg("views").alias("avg_views_per_video"),
+        F.max("views").alias("max_views"),
+        F.countDistinct("channel_title").alias("unique_channels"),
+        F.countDistinct("category_id").alias("unique_categories")
+    ).withColumn("_aggregated_at", F.current_timestamp())
+    
+    trending_count = trending_agg.count()
+    print(f"✅ Trending aggregation result count: {trending_count}")
+    
+    if trending_count > 0:
+        print("📊 Trending aggregation sample:")
+        trending_agg.show(5, truncate=False)
+        
+        # Write trending test
+        trending_path = f"s3://{GOLD_BUCKET}/debug_trending_test/"
+        glueContext.write_dynamic_frame.from_options(
+            frame=DynamicFrame.fromDF(trending_agg, glueContext, "trending_test"),
+            connection_type="s3",
+            format="parquet",
+            connection_options={"path": trending_path},
+            transformation_ctx="write_trending_test"
+        )
+        print(f"✅ Trending test written to: {trending_path}")
+    
+    # ── Step 5: Test Channel Analytics Aggregation ─────────────────────────
+    print("🧪 Testing channel analytics aggregation...")
+    
+    channel_agg = stats_df.groupBy("channel_title", "region").agg(
+        F.countDistinct("video_id").alias("total_videos"),
+        F.sum("views").alias("total_views"),
+        F.sum("likes").alias("total_likes"),
+        F.avg("views").alias("avg_views_per_video"),
+        F.max("views").alias("peak_views"),
+        F.count("trending_date").alias("times_trending")
+    ).withColumn("_aggregated_at", F.current_timestamp())
+    
+    channel_count = channel_agg.count()
+    print(f"✅ Channel aggregation result count: {channel_count}")
+    
+    if channel_count > 0:
+        print("📊 Channel aggregation sample:")
+        channel_agg.show(5, truncate=False)
+        
+        # Write channel test
+        channel_path = f"s3://{GOLD_BUCKET}/debug_channel_test/"
+        glueContext.write_dynamic_frame.from_options(
+            frame=DynamicFrame.fromDF(channel_agg, glueContext, "channel_test"),
+            connection_type="s3",
+            format="parquet",
+            connection_options={"path": channel_path},
+            transformation_ctx="write_channel_test"
+        )
+        print(f"✅ Channel test written to: {channel_path}")
+    
+    # ── Step 6: Test Original Script Logic ──────────────────────────────────
+    print("🧪 Testing original script reference table logic...")
+    
+    # Try to read reference table (this might be the issue)
+    try:
+        ref_dyf = glueContext.create_dynamic_frame.from_catalog(
+            database=SILVER_DB,
+            table_name="cleaned_reference_statistic",
+            transformation_ctx="ref",
+        )
+        ref_df = ref_dyf.toDF()
+        ref_count = ref_df.count()
+        print(f"✅ Reference table records: {ref_count}")
+        
+        if ref_count > 0:
+            print("📋 Reference table schema:")
+            ref_df.printSchema()
+            print("📊 Reference table sample:")
+            ref_df.show(3, truncate=False)
+        else:
+            print("⚠️  Reference table is empty - this might cause issues!")
+            
+    except Exception as ref_error:
+        print(f"❌ ERROR reading reference table: {ref_error}")
+        print("🔍 This is likely why your original script fails!")
+    
+    print(f"""
+🎯 DEBUG SUMMARY:
+✅ Silver records: {total_count}
+✅ Region aggregation: {region_count} results
+✅ Trending aggregation: {trending_count} results  
+✅ Channel aggregation: {channel_count} results
+
+🔍 Check S3 bucket for debug_*_test/ folders
+""")
+
+except Exception as e:
+    print(f"❌ DEBUG script failed: {str(e)}")
+    import traceback
+    traceback.print_exc()
+    raise e
+
+finally:
+    job.commit()
