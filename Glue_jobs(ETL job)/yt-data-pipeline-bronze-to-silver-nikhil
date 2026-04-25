@@ -1,0 +1,401 @@
+"""
+Glue Job: Bronze → Silver (Statistics Data)
+────────────────────────────────────────────
+Reads raw JSON statistics from the Bronze layer (YouTube API format only),
+applies schema enforcement, data cleansing, deduplication,
+and writes clean Parquet to the Silver layer.
+
+Bugs Fixed in This Version:
+  [BUG 1] "bronze_database" was listed TWICE in getResolvedOptions; "silver_database" was missing entirely
+           → causes a KeyError when args["silver_database"] is accessed later
+  [BUG 2] S3 bronze_path was hardcoded ("yt-data-pipeline-bronze-ap-south-1-nikhil")
+           → breaks in any environment that isn't the original dev account; now uses --bronze_bucket arg
+  [BUG 3] favoriteCount was incorrectly aliased as "dislikes"
+           → YouTube API v3 does not expose dislikeCount; favoriteCount is a separate concept
+           → now mapped to "favorite_count" and "dislikes" is dropped (or set to 0 separately)
+  [BUG 4] partitionKeys in the sink specified "trending_date_parsed" but the DataFrame column
+           was renamed to "trending_date" in Step 4 — Glue would silently ignore the partition
+           → aligned to use "trending_date" consistently
+  [BUG 5] --bronze_bucket was never declared in getResolvedOptions or the Config block
+           → required to build the bronze_path dynamically (needed to fix BUG 2)
+  (Pre-existing documented fixes FIX 1–6 from original docstring are also retained below)
+
+Job Parameters (set all in Glue Console → Job details → Job parameters):
+    --JOB_NAME          auto-set by Glue
+    --bronze_bucket     yt-data-pipeline-bronze-ap-south-1-nikhil   ← NEW (BUG 5)
+    --bronze_database   yt_pipeline_bronze_nikhil
+    --bronze_table      raw_statistics
+    --silver_bucket     yt-data-pipeline-silver-ap-south-1-nikhil
+    --silver_database   yt_pipeline_silver_nikhil
+    --silver_table      cleaned_statistics
+"""
+
+import sys
+from datetime import datetime
+
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    StringType, LongType, BooleanType, DoubleType,
+    StructType, StructField, IntegerType
+)
+from pyspark.sql.window import Window
+
+# ── Job Setup ────────────────────────────────────────────────────────────────
+# [BUG 1 FIX] Removed duplicate "bronze_database" entry; added missing "silver_database"
+# [BUG 5 FIX] Added "bronze_bucket" so the S3 path can be built dynamically
+args = getResolvedOptions(sys.argv, [
+    "JOB_NAME",
+    "bronze_bucket",        # [BUG 5 FIX] was never declared
+    "bronze_database",
+    "bronze_table",
+    "silver_bucket",
+    "silver_database",      # [BUG 1 FIX] was missing; "bronze_database" appeared twice instead
+    "silver_table",
+])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args["JOB_NAME"], args)
+logger = glueContext.get_logger()
+
+# ── Config ───────────────────────────────────────────────────────────────────
+BRONZE_BUCKET = args["bronze_bucket"]           # [BUG 5 FIX] now available
+BRONZE_DB     = args["bronze_database"]
+BRONZE_TABLE  = args["bronze_table"]
+SILVER_BUCKET = args["silver_bucket"]
+SILVER_DB     = args["silver_database"]         # [BUG 1 FIX] now available
+SILVER_TABLE  = args["silver_table"]
+SILVER_PATH    = f"s3://{SILVER_BUCKET}/youtube/statistics/"
+REFERENCE_PATH = f"s3://{SILVER_BUCKET}/youtube/reference_data/"
+
+# [BUG 2 FIX] Build bronze path from the job arg instead of hardcoding the bucket name
+BRONZE_PATH = f"s3://{BRONZE_BUCKET}/youtube/raw_statistics/"
+
+logger.info(f"Starting Bronze to Silver transformation...")
+logger.info(f"Bronze: {BRONZE_DB}.{BRONZE_TABLE} → {BRONZE_PATH}")
+logger.info(f"Silver: {SILVER_DB}.{SILVER_TABLE} → {SILVER_PATH}")
+logger.info(f"Reference: {SILVER_DB}.cleaned_reference_statistic → {REFERENCE_PATH}")
+
+try:
+    # ── Step 1: Read from Bronze S3 (JSON files) ─────────────────────────────
+    logger.info("Reading YouTube API JSON files from Bronze S3...")
+
+    bronze_dynamic_frame = glueContext.create_dynamic_frame.from_options(
+        format_options={
+            "multiline": False,
+            "optimizePerformance": False
+        },
+        connection_type="s3",
+        format="json",
+        connection_options={
+            "paths": [BRONZE_PATH],   # [BUG 2 FIX] uses dynamic path, not hardcoded string
+            "recurse": True
+        },
+        transformation_ctx="bronze_dynamic_frame"
+    )
+
+    df = bronze_dynamic_frame.toDF()
+    initial_count = df.count()
+    logger.info(f"Bronze JSON records read: {initial_count}")
+
+    if initial_count == 0:
+        logger.info("No new records to process. Committing empty job.")
+        job.commit()
+        sys.exit(0)
+
+    # ── Step 2: Extract metadata from S3 path ────────────────────────────────
+    logger.info("Extracting metadata from S3 file paths...")
+
+    df = df.withColumn("input_file_name", F.input_file_name())
+    df = df.withColumn("data_source", F.lit("youtube_api"))
+
+    # Path: s3://bucket/youtube/raw_statistics/region=US/date=2026-04-23/hour=04/file.json
+    df = df.withColumn(
+        "region",
+        F.regexp_extract(F.col("input_file_name"), r"region=([^/]+)", 1)
+    ).withColumn(
+        "trending_date_parsed",
+        F.to_date(F.regexp_extract(F.col("input_file_name"), r"date=([^/]+)", 1), "yyyy-MM-dd")
+    ).withColumn(
+        "trending_hour",
+        F.regexp_extract(F.col("input_file_name"), r"hour=([^/]+)", 1)
+    )
+
+    df.select("region", "trending_date_parsed", "trending_hour", "kind").show(3, truncate=False)
+
+    # ── Step 3: Explode YouTube API items array ──────────────────────────────
+    logger.info("Exploding YouTube API items array...")
+
+    videos_df = df.select(
+        F.explode(F.col("items")).alias("video_item"),
+        F.col("region"),
+        F.col("trending_date_parsed"),
+        F.col("trending_hour"),
+        F.col("data_source")
+    )
+
+    exploded_count = videos_df.count()
+    logger.info(f"Individual video records after explosion: {exploded_count}")
+
+    # ── Step 4: Schema Enforcement & Field Extraction ────────────────────────
+    logger.info("Extracting fields with schema enforcement...")
+
+    df = videos_df.select(
+        # Core identifiers
+        F.col("video_item.id").cast(StringType()).alias("video_id"),
+        F.col("video_item.snippet.title").cast(StringType()).alias("title"),
+        F.col("video_item.snippet.channelTitle").cast(StringType()).alias("channel_title"),
+        F.col("video_item.snippet.channelId").cast(StringType()).alias("channel_id"),
+
+        # Metrics
+        F.coalesce(F.col("video_item.statistics.viewCount").cast(LongType()), F.lit(0)).alias("views"),
+        F.coalesce(F.col("video_item.statistics.likeCount").cast(LongType()), F.lit(0)).alias("likes"),
+        # [BUG 3 FIX] favoriteCount must NOT be aliased as "dislikes".
+        #   YouTube API v3 deprecated dislikeCount in Dec 2021; it returns null/0 for all videos.
+        #   favoriteCount is a distinct metric and should be kept under its own name.
+        F.coalesce(F.col("video_item.statistics.favoriteCount").cast(LongType()), F.lit(0)).alias("favorite_count"),
+        F.coalesce(F.col("video_item.statistics.commentCount").cast(LongType()), F.lit(0)).alias("comment_count"),
+
+        # Dates
+        F.to_timestamp(
+            F.col("video_item.snippet.publishedAt"), "yyyy-MM-dd'T'HH:mm:ss'Z'"
+        ).alias("publish_time"),
+        # Keep the column name "trending_date" — matches the partitionKey used in the sink (BUG 4)
+        F.col("trending_date_parsed").alias("trending_date"),
+
+        # Categories and content
+        F.col("video_item.snippet.categoryId").cast(LongType()).alias("category_id"),
+        F.col("video_item.snippet.tags").alias("tags"),
+        F.col("video_item.snippet.description").cast(StringType()).alias("description"),
+
+        # Additional YouTube API fields
+        F.col("video_item.contentDetails.duration").cast(StringType()).alias("duration"),
+        F.col("video_item.snippet.defaultLanguage").cast(StringType()).alias("default_language"),
+        F.col("video_item.contentDetails.definition").cast(StringType()).alias("definition"),
+        F.col("video_item.contentDetails.caption").cast(StringType()).alias("has_captions"),
+
+        # Thumbnail
+        F.col("video_item.snippet.thumbnails.default.url").cast(StringType()).alias("thumbnail_link"),
+
+        # Boolean compatibility fields
+        F.lit(False).alias("comments_disabled"),
+        F.lit(False).alias("ratings_disabled"),
+        F.lit(False).alias("video_error_or_removed"),
+
+        # Metadata
+        F.col("region").cast(StringType()).alias("region"),
+        F.col("trending_hour").cast(StringType()).alias("trending_hour"),
+        F.col("data_source").cast(StringType()).alias("data_source"),
+        F.current_timestamp().alias("processed_at")
+    )
+
+    # ── Step 5: Data Quality Checks ──────────────────────────────────────────
+    logger.info("Running data quality checks...")
+
+    null_counts = {}
+    for col_name in ["video_id", "title", "channel_title", "views"]:
+        null_count = df.filter(F.col(col_name).isNull()).count()
+        null_counts[col_name] = null_count
+        if null_count > 0:
+            logger.warning(f"DQ WARNING: {col_name} has {null_count} null values")
+
+    negative_views = df.filter(F.col("views") < 0).count()
+    if negative_views > 0:
+        logger.warning(f"DQ WARNING: {negative_views} records with negative views")
+
+    logger.info(f"DQ check complete. Null counts: {null_counts}")
+
+    df = df.filter(
+        F.col("video_id").isNotNull() &
+        F.col("title").isNotNull() &
+        F.col("channel_title").isNotNull() &
+        F.col("views").isNotNull() &
+        F.col("region").isNotNull() &
+        F.col("trending_date").isNotNull() &
+        (F.col("views") >= 0) &
+        (F.col("likes") >= 0) &
+        (F.col("comment_count") >= 0) &
+        (F.length(F.trim(F.col("video_id"))) > 0) &
+        (F.length(F.trim(F.col("title"))) > 0)
+    )
+
+    # ── Step 6: Region Standardization & Deduplication ──────────────────────
+    logger.info("Applying region standardization...")
+
+    supported_regions = ["US", "GB", "CA", "DE", "FR", "IN", "JP", "KR", "MX", "RU"]
+
+    df = df.withColumn(
+        "region",
+        F.when(F.upper(F.col("region")).isin(supported_regions), F.upper(F.col("region")))
+        .otherwise("OTHER")
+    ).filter(F.col("region") != "OTHER")
+
+    logger.info("Region distribution:")
+    df.groupBy("region").count().orderBy("region").show()
+
+    logger.info("Applying deduplication logic...")
+
+    # Order by views DESC so the most-viewed snapshot wins (current_timestamp gives the same
+    # value to all rows in the same job run — original FIX 3 note is correct)
+    window_spec = Window.partitionBy("video_id", "region", "trending_date").orderBy(F.col("views").desc())
+
+    df = df.withColumn(
+        "row_number",
+        F.row_number().over(window_spec)
+    ).filter(
+        F.col("row_number") == 1
+    ).drop("row_number")
+
+    # ── Step 7: Derived Metrics ──────────────────────────────────────────────
+    logger.info("Calculating derived metrics...")
+
+    df = df.withColumn(
+        "like_ratio",
+        F.when(F.col("views") > 0, F.col("likes").cast(DoubleType()) / F.col("views").cast(DoubleType())).otherwise(0.0)
+    ).withColumn(
+        "engagement_rate",
+        F.when(F.col("views") > 0,
+               (F.col("likes") + F.col("comment_count")).cast(DoubleType()) / F.col("views").cast(DoubleType())
+        ).otherwise(0.0)
+    ).withColumn(
+        "title_length",
+        F.length(F.col("title"))
+    ).withColumn(
+        "has_tags",
+        F.when(F.col("tags").isNotNull() & (F.size(F.col("tags")) > 0), True).otherwise(False)
+    ).withColumn(
+        "tag_count",
+        F.when(F.col("tags").isNotNull(), F.size(F.col("tags"))).otherwise(0)
+    ).withColumn(
+        "description_length",
+        F.when(F.col("description").isNotNull(), F.length(F.col("description"))).otherwise(0)
+    ).withColumn(
+        "is_hd",
+        F.when(F.col("definition") == "hd", True).otherwise(False)
+    ).withColumn(
+        "has_captions_bool",
+        F.when(F.col("has_captions") == "true", True).otherwise(False)
+    ).withColumn(
+        "pipeline_version",
+        F.lit("bronze_to_silver_v1.0")
+    ).withColumn(
+        "_processed_at", F.current_timestamp()
+    ).withColumn(
+        "_job_name", F.lit(args["JOB_NAME"])
+    )
+
+    clean_count = df.count()
+    logger.info(f"Final records after cleansing and dedup: {clean_count}")
+
+    df.select(
+        "video_id", "title", "channel_title", "views", "likes",
+        "like_ratio", "engagement_rate", "region", "trending_date"
+    ).show(5, truncate=False)
+
+    # ── Step 8: Write Statistics to Silver Layer ─────────────────────────────
+    logger.info(f"Writing statistics to Silver: {SILVER_PATH}")
+
+    dynamic_frame = DynamicFrame.fromDF(df, glueContext, "silver_statistics")
+
+    sink = glueContext.getSink(
+        connection_type="s3",
+        path=SILVER_PATH,
+        enableUpdateCatalog=True,
+        updateBehavior="UPDATE_IN_DATABASE",
+        # [BUG 4 FIX] Use "trending_date" — that is the actual column name in the DataFrame.
+        #   The original code used "trending_date_parsed" which was renamed to "trending_date"
+        #   in Step 4. A mismatch here causes Glue to silently skip partitioning.
+        partitionKeys=["region", "trending_date"],
+    )
+    sink.setCatalogInfo(catalogDatabase=SILVER_DB, catalogTableName=SILVER_TABLE)
+    sink.setFormat("glueparquet", compression="snappy")
+    sink.writeFrame(dynamic_frame)
+
+    logger.info(f"Silver write complete. {clean_count} records written.")
+
+    # ── Step 9: Write YouTube Categories Reference Table ─────────────────────
+    logger.info(f"Writing reference data to Silver: {REFERENCE_PATH}")
+
+    categories = [
+        (1,  "Film & Animation",        True,  "all"),
+        (2,  "Autos & Vehicles",         True,  "all"),
+        (10, "Music",                    True,  "all"),
+        (15, "Pets & Animals",           True,  "all"),
+        (17, "Sports",                   True,  "all"),
+        (18, "Short Movies",             False, "all"),
+        (19, "Travel & Events",          True,  "all"),
+        (20, "Gaming",                   True,  "all"),
+        (21, "Videoblogging",            False, "all"),
+        (22, "People & Blogs",           True,  "all"),
+        (23, "Comedy",                   True,  "all"),
+        (24, "Entertainment",            True,  "all"),
+        (25, "News & Politics",          True,  "all"),
+        (26, "Howto & Style",            True,  "all"),
+        (27, "Education",                True,  "all"),
+        (28, "Science & Technology",     True,  "all"),
+        (29, "Nonprofits & Activism",    True,  "all"),
+    ]
+
+    reference_schema = StructType([
+        StructField("category_id",   LongType(),    nullable=False),
+        StructField("category_name", StringType(),  nullable=False),
+        StructField("assignable",    BooleanType(), nullable=False),
+        StructField("region",        StringType(),  nullable=False),
+    ])
+
+    df_reference = spark.createDataFrame(categories, schema=reference_schema)
+    df_reference = df_reference.withColumn("_processed_at", F.current_timestamp())
+    df_reference = df_reference.withColumn("_job_name", F.lit(args["JOB_NAME"]))
+
+    ref_dynamic_frame = DynamicFrame.fromDF(df_reference, glueContext, "silver_reference")
+
+    ref_sink = glueContext.getSink(
+        connection_type="s3",
+        path=REFERENCE_PATH,
+        enableUpdateCatalog=True,
+        updateBehavior="UPDATE_IN_DATABASE",
+        partitionKeys=[],
+    )
+    ref_sink.setCatalogInfo(
+        catalogDatabase=SILVER_DB,
+        catalogTableName="cleaned_reference_statistic"
+    )
+    ref_sink.setFormat("glueparquet", compression="snappy")
+    ref_sink.writeFrame(ref_dynamic_frame)
+
+    logger.info("Reference data write complete. cleaned_reference_statistic table created in Athena.")
+
+    # ── Final Summary ────────────────────────────────────────────────────────
+    unique_videos    = df.select("video_id").distinct().count()
+    unique_channels  = df.select("channel_title").distinct().count()
+    regions_processed = df.select("region").distinct().collect()
+    date_range       = df.select(F.min("trending_date"), F.max("trending_date")).collect()[0]
+    avg_engagement   = df.agg(F.avg("engagement_rate")).collect()[0][0]
+
+    logger.info(f"FINAL SUMMARY:")
+    logger.info(f"  Total records processed : {clean_count}")
+    logger.info(f"  Unique videos           : {unique_videos}")
+    logger.info(f"  Unique channels         : {unique_channels}")
+    logger.info(f"  Regions processed       : {[row.region for row in regions_processed]}")
+    logger.info(f"  Date range              : {date_range[0]} to {date_range[1]}")
+    logger.info(f"  Average engagement rate : {avg_engagement:.4f}")
+    logger.info(f"  Output format           : Parquet (Snappy compressed)")
+    logger.info(f"  Partitioning            : By region and trending_date")
+
+except Exception as e:
+    logger.error(f"ERROR in Bronze to Silver Statistics transformation: {str(e)}")
+    import traceback
+    traceback.print_exc()
+    raise e
+
+finally:
+    job.commit()
+    logger.info("Job completed and committed.")
