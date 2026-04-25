@@ -1,0 +1,30 @@
+Bronze Bucket Name - yt-data-pipeline-bronze-ap-south-1-nikhil
+Silver Bucket Name -  yt-data-pipeline-silver-ap-south-1-nikhil
+Gold Bucket Name -  yt-data-pipeline-gold-ap-south-1-nikhil
+
+Script Bucket - 
+yt-data-pipeline-script-ap-south-1-nikhil
+
+sns arn arn:aws:sns:ap-south-1:767397729434:yt-data-pipeline-alerts-nikhil:37618a14-ad09-4982-84a8-4282cd086ac3
+
+
+
+yt-data-pipeline-bronze-ap-south-1-nikhil
+yt-data-pipeline-silver-ap-south-1-nikhil
+yt-data-pipeline-gold-ap-south-1-nikhil
+
+
+Glue  database
+
+yt_data_pipeline_bronze_nikhil
+yt_data_pipeline_silver_nikhil
+yt_data_pipeline_gold_nikhil
+
+
+
+--bronze_database   yt_data_pipeline_bronze_nikhil
+--bronze_table  raw_statistics
+--silver_database  yt_data_pipeline_silver_nikhil
+--silver_table  cleaned_statistics
+--silver_bucket  yt-data-pipeline-silver-ap-south-1-
+nikhil 
