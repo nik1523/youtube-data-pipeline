@@ -1,0 +1,282 @@
+{
+  "Comment": "YouTube Data Pipeline - Updated orchestration for Bronze→Silver→Gold flow with current project structure",
+  "StartAt": "IngestFromYouTubeAPI",
+  "States": {
+    "IngestFromYouTubeAPI": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:ap-south-1:767397729434:function:yt-data-pipeline-youtube-ingestion-nikhil",
+        "Payload": {
+          "triggered_by": "step_functions",
+          "execution_id.$": "$$.Execution.Id",
+          "target_bucket": "yt-data-pipeline-bronze-ap-south-1-nikhil"
+        }
+      },
+      "ResultPath": "$.ingestion_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "NotifyIngestionFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "WaitForS3Consistency"
+    },
+    "WaitForS3Consistency": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Comment": "Wait for S3 eventual consistency for newly written CSV files",
+      "Next": "RunBronzeToSilverGlueJob"
+    },
+    "RunBronzeToSilverGlueJob": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "yt-data-pipeline-bronze-to-silver-nikhil",
+        "Arguments": {
+          "--bronze_bucket": "yt-data-pipeline-bronze-ap-south-1-nikhil",
+          "--silver_bucket": "yt-data-pipeline-silver-ap-south-1-nikhil",
+          "--silver_database": "yt_pipeline_silver_nikhil",
+          "--reference_bucket": "yt-data-pipeline-reference-ap-south-1-nikhil"
+        }
+      },
+      "ResultPath": "$.bronze_to_silver_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "NotifyBronzeToSilverFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "WaitForSilverProcessing"
+    },
+    "WaitForSilverProcessing": {
+      "Type": "Wait",
+      "Seconds": 10,
+      "Comment": "Brief wait for Silver layer catalog updates",
+      "Next": "RunDataQualityChecks"
+    },
+    "RunDataQualityChecks": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:ap-south-1:767397729434:function:yt-data-pipeline-data-quality-nikhil",
+        "Payload": {
+          "layer": "silver",
+          "database": "yt_pipeline_silver_nikhil",
+          "tables": [
+            "cleaned_statistics",
+            "cleaned_reference_statistic"
+          ],
+          "execution_id.$": "$$.Execution.Id"
+        }
+      },
+      "ResultPath": "$.dq_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "EvaluateDataQuality"
+    },
+    "EvaluateDataQuality": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.dq_result.Payload.quality_passed",
+          "BooleanEquals": true,
+          "Next": "RunSilverToGoldGlueJob"
+        }
+      ],
+      "Default": "NotifyDQFailure"
+    },
+    "RunSilverToGoldGlueJob": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "yt-data-pipeline-silver-to-gold-nikhil",
+        "Arguments": {
+          "--silver_database": "yt_pipeline_silver_nikhil",
+          "--gold_bucket": "yt-data-pipeline-gold-ap-south-1-nikhil",
+          "--gold_database": "yt_pipeline_gold_nikhil"
+        }
+      },
+      "ResultPath": "$.silver_to_gold_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "NotifyGoldFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "RefreshAthenaPartitions"
+    },
+    "RefreshAthenaPartitions": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:ap-south-1:767397729434:function:yt-data-pipeline-athena-refresh-nikhil",
+        "Payload": {
+          "database": "yt_pipeline_gold_nikhil",
+          "tables": [
+            "trending_analytics",
+            "channel_analytics",
+            "category_analytics"
+          ],
+          "execution_id.$": "$$.Execution.Id"
+        }
+      },
+      "ResultPath": "$.athena_refresh_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "RefreshQuickSightDatasets"
+    },
+    "RefreshQuickSightDatasets": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:ap-south-1:767397729434:function:yt-data-pipeline-quicksight-refresh-nikhil",
+        "Payload": {
+          "datasets": [
+            "youtube-trending-analytics",
+            "youtube-channel-performance",
+            "youtube-category-insights"
+          ],
+          "execution_id.$": "$$.Execution.Id"
+        }
+      },
+      "ResultPath": "$.quicksight_refresh_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "NotifyQuickSightFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "NotifySuccess"
+    },
+    "NotifySuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:ap-south-1:767397729434:yt-data-pipeline-alerts-nikhil",
+        "Subject": "[YT Pipeline] ✅ Pipeline completed successfully",
+        "Message.$": "States.Format('🎉 Pipeline execution {} completed successfully!\n\n📊 Results:\n• Bronze ingestion: {}\n• Silver processing: {}\n• Gold analytics: {}\n• QuickSight refresh: {}\n\n🕐 Completed at: {}', $$.Execution.Id, $.ingestion_result.Payload.status, $.bronze_to_silver_result.JobRunState, $.silver_to_gold_result.JobRunState, $.quicksight_refresh_result.Payload.status, $$.State.EnteredTime)"
+      },
+      "End": true
+    },
+    "NotifyIngestionFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:ap-south-1:767397729434:yt-data-pipeline-alerts-nikhil",
+        "Subject": "[YT Pipeline] ❌ FAILURE - YouTube API Ingestion Failed",
+        "Message.$": "States.Format('🚨 Pipeline execution {} failed at ingestion step.\n\n❌ Error Details:\n{}', $$.Execution.Id, States.JsonToString($.error))"
+      },
+      "End": true
+    },
+    "NotifyBronzeToSilverFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:ap-south-1:767397729434:yt-data-pipeline-alerts-nikhil",
+        "Subject": "[YT Pipeline] ❌ FAILURE - Bronze to Silver Processing Failed",
+        "Message.$": "States.Format('🚨 Pipeline execution {} failed at Bronze→Silver step.\n\n❌ Glue Job Error:\n{}', $$.Execution.Id, States.JsonToString($.error))"
+      },
+      "End": true
+    },
+    "NotifyDQFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:ap-south-1:767397729434:yt-data-pipeline-alerts-nikhil",
+        "Subject": "[YT Pipeline] ⚠️ WARNING - Data Quality Checks Failed",
+        "Message.$": "States.Format('⚠️ Pipeline execution {} stopped due to data quality issues.\n\n📊 Quality Report:\n{}', $$.Execution.Id, States.JsonToString($.dq_result.Payload))"
+      },
+      "End": true
+    },
+    "NotifyGoldFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:ap-south-1:767397729434:yt-data-pipeline-alerts-nikhil",
+        "Subject": "[YT Pipeline] ❌ FAILURE - Gold Analytics Generation Failed",
+        "Message.$": "States.Format('🚨 Pipeline execution {} failed at Silver→Gold step.\n\n❌ Analytics Job Error:\n{}', $$.Execution.Id, States.JsonToString($.error))"
+      },
+      "End": true
+    },
+    "NotifyQuickSightFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:ap-south-1:767397729434:yt-data-pipeline-alerts-nikhil",
+        "Subject": "[YT Pipeline] ⚠️ WARNING - QuickSight Refresh Failed",
+        "Message.$": "States.Format('⚠️ Pipeline execution {} completed but QuickSight refresh failed.\n\n📊 Data is updated but dashboards may show stale data.\n\n❌ QuickSight Error:\n{}', $$.Execution.Id, States.JsonToString($.error))"
+      },
+      "End": true
+    }
+  }
+}
