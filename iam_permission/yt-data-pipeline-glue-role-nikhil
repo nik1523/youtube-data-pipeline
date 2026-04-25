@@ -1,0 +1,245 @@
+{
+  "RoleName": "yt-data-pipeline-glue-role-nikhil",
+  "Description": "IAM role for YouTube Data Pipeline Glue ETL jobs",
+  "AssumeRolePolicyDocument": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Service": "glue.amazonaws.com"
+        },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  },
+  "ManagedPolicyArns": [
+    "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+  ],
+  "InlinePolicies": [
+    {
+      "PolicyName": "yt-data-pipeline-glue-execution-policy-nikhil",
+      "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "S3DataLakeAccess",
+            "Effect": "Allow",
+            "Action": [
+              "s3:GetObject",
+              "s3:PutObject",
+              "s3:DeleteObject",
+              "s3:ListBucket",
+              "s3:GetBucketLocation",
+              "s3:GetBucketVersioning",
+              "s3:ListBucketMultipartUploads",
+              "s3:AbortMultipartUpload",
+              "s3:ListMultipartUploadParts"
+            ],
+            "Resource": [
+              "arn:aws:s3:::yt-data-pipeline-bronze-ap-south-1-nikhil",
+              "arn:aws:s3:::yt-data-pipeline-bronze-ap-south-1-nikhil/*",
+              "arn:aws:s3:::yt-data-pipeline-silver-ap-south-1-nikhil",
+              "arn:aws:s3:::yt-data-pipeline-silver-ap-south-1-nikhil/*",
+              "arn:aws:s3:::yt-data-pipeline-gold-ap-south-1-nikhil",
+              "arn:aws:s3:::yt-data-pipeline-gold-ap-south-1-nikhil/*",
+              "arn:aws:s3:::yt-data-pipeline-script-ap-south-1-nikhil",
+              "arn:aws:s3:::yt-data-pipeline-script-ap-south-1-nikhil/*"
+            ]
+          },
+          {
+            "Sid": "GlueCatalogFullAccess",
+            "Effect": "Allow",
+            "Action": [
+              "glue:GetDatabase",
+              "glue:GetDatabases",
+              "glue:CreateDatabase",
+              "glue:UpdateDatabase",
+              "glue:DeleteDatabase",
+              "glue:GetTable",
+              "glue:GetTables",
+              "glue:CreateTable",
+              "glue:UpdateTable",
+              "glue:DeleteTable",
+              "glue:GetPartition",
+              "glue:GetPartitions",
+              "glue:CreatePartition",
+              "glue:UpdatePartition",
+              "glue:DeletePartition",
+              "glue:BatchCreatePartition",
+              "glue:BatchDeletePartition",
+              "glue:BatchUpdatePartition",
+              "glue:GetUserDefinedFunction",
+              "glue:GetUserDefinedFunctions",
+              "glue:CreateUserDefinedFunction",
+              "glue:UpdateUserDefinedFunction",
+              "glue:DeleteUserDefinedFunction"
+            ],
+            "Resource": [
+              "arn:aws:glue:ap-south-1:767397729434:catalog",
+              "arn:aws:glue:ap-south-1:767397729434:database/yt_data_pipeline_bronze_nikhil",
+              "arn:aws:glue:ap-south-1:767397729434:database/yt_data_pipeline_silver_nikhil",
+              "arn:aws:glue:ap-south-1:767397729434:database/yt_data_pipeline_gold_nikhil",
+              "arn:aws:glue:ap-south-1:767397729434:table/yt_data_pipeline_bronze_nikhil/*",
+              "arn:aws:glue:ap-south-1:767397729434:table/yt_data_pipeline_silver_nikhil/*",
+              "arn:aws:glue:ap-south-1:767397729434:table/yt_data_pipeline_gold_nikhil/*",
+              "arn:aws:glue:ap-south-1:767397729434:userDefinedFunction/yt_data_pipeline_bronze_nikhil/*",
+              "arn:aws:glue:ap-south-1:767397729434:userDefinedFunction/yt_data_pipeline_silver_nikhil/*",
+              "arn:aws:glue:ap-south-1:767397729434:userDefinedFunction/yt_data_pipeline_gold_nikhil/*"
+            ]
+          },
+          {
+            "Sid": "GlueJobManagement",
+            "Effect": "Allow",
+            "Action": [
+              "glue:GetJob",
+              "glue:GetJobs",
+              "glue:GetJobRun",
+              "glue:GetJobRuns",
+              "glue:StartJobRun",
+              "glue:BatchStopJobRun",
+              "glue:UpdateJob",
+              "glue:GetJobBookmark",
+              "glue:ResetJobBookmark"
+            ],
+            "Resource": [
+              "arn:aws:glue:ap-south-1:767397729434:job/yt-data-pipeline-bronze-to-silver-nikhil",
+              "arn:aws:glue:ap-south-1:767397729434:job/yt-data-pipeline-silver-to-gold-nikhil"
+            ]
+          },
+          {
+            "Sid": "CloudWatchLogsAccess",
+            "Effect": "Allow",
+            "Action": [
+              "logs:CreateLogGroup",
+              "logs:CreateLogStream",
+              "logs:PutLogEvents",
+              "logs:DescribeLogGroups",
+              "logs:DescribeLogStreams",
+              "logs:DescribeLogEvents"
+            ],
+            "Resource": [
+              "arn:aws:logs:ap-south-1:767397729434:log-group:/aws-glue/jobs/*",
+              "arn:aws:logs:ap-south-1:767397729434:log-group:/aws-glue/jobs/output",
+              "arn:aws:logs:ap-south-1:767397729434:log-group:/aws-glue/jobs/error",
+              "arn:aws:logs:ap-south-1:767397729434:log-group:/aws-glue/python-jobs/*"
+            ]
+          },
+          {
+            "Sid": "CloudWatchMetricsAccess",
+            "Effect": "Allow",
+            "Action": [
+              "cloudwatch:PutMetricData",
+              "cloudwatch:GetMetricStatistics",
+              "cloudwatch:ListMetrics"
+            ],
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "cloudwatch:namespace": [
+                  "AWS/Glue",
+                  "YT-Pipeline/Glue"
+                ]
+              }
+            }
+          },
+          {
+            "Sid": "EC2NetworkAccess",
+            "Effect": "Allow",
+            "Action": [
+              "ec2:CreateNetworkInterface",
+              "ec2:DeleteNetworkInterface",
+              "ec2:DescribeNetworkInterfaces",
+              "ec2:DescribeVpcs",
+              "ec2:DescribeSubnets",
+              "ec2:DescribeSecurityGroups",
+              "ec2:AttachNetworkInterface",
+              "ec2:DetachNetworkInterface"
+            ],
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:RequestedRegion": "ap-south-1"
+              }
+            }
+          },
+          {
+            "Sid": "SNSNotificationAccess",
+            "Effect": "Allow",
+            "Action": [
+              "sns:Publish",
+              "sns:GetTopicAttributes"
+            ],
+            "Resource": [
+              "arn:aws:sns:ap-south-1:767397729434:yt-data-pipeline-alerts-nikhil:37618a14-ad09-4982-84a8-4282cd086ac3"
+            ]
+          },
+          {
+            "Sid": "SecretsManagerAccess",
+            "Effect": "Allow",
+            "Action": [
+              "secretsmanager:GetSecretValue",
+              "secretsmanager:DescribeSecret"
+            ],
+            "Resource": [
+              "arn:aws:secretsmanager:ap-south-1:767397729434:secret:yt-pipeline/*"
+            ]
+          },
+          {
+            "Sid": "KMSAccess",
+            "Effect": "Allow",
+            "Action": [
+              "kms:Decrypt",
+              "kms:DescribeKey",
+              "kms:GenerateDataKey"
+            ],
+            "Resource": [
+              "arn:aws:kms:ap-south-1:767397729434:key/*"
+            ],
+            "Condition": {
+              "StringEquals": {
+                "kms:ViaService": [
+                  "s3.ap-south-1.amazonaws.com",
+                  "glue.ap-south-1.amazonaws.com"
+                ]
+              }
+            }
+          },
+          {
+            "Sid": "DenyDangerousActions",
+            "Effect": "Deny",
+            "Action": [
+              "s3:DeleteBucket",
+              "s3:PutBucketPolicy",
+              "s3:DeleteBucketPolicy",
+              "glue:DeleteDatabase",
+              "iam:*",
+              "kms:Delete*",
+              "kms:Disable*",
+              "kms:ScheduleKeyDeletion"
+            ],
+            "Resource": "*"
+          }
+        ]
+      }
+    }
+  ],
+  "Tags": [
+    {
+      "Key": "Project",
+      "Value": "YouTubeDataPipeline"
+    },
+    {
+      "Key": "Owner",
+      "Value": "Nikhil"
+    },
+    {
+      "Key": "Environment",
+      "Value": "Production"
+    },
+    {
+      "Key": "Service",
+      "Value": "Glue"
+    }
+  ]
+}
