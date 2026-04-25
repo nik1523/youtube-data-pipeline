@@ -1,0 +1,138 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CloudWatchLogsAccess",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-south-1:767397729434:log-group:/aws/lambda/yt-data-pipeline-*",
+        "arn:aws:logs:ap-south-1:767397729434:log-group:/aws/lambda/yt-data-pipeline-*:*"
+      ]
+    },
+    {
+      "Sid": "S3BucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:GetBucketVersioning"
+      ],
+      "Resource": [
+        "arn:aws:s3:::yt-data-pipeline-bronze-ap-south-1-nikhil",
+        "arn:aws:s3:::yt-data-pipeline-bronze-ap-south-1-nikhil/*",
+        "arn:aws:s3:::yt-data-pipeline-silver-ap-south-1-nikhil",
+        "arn:aws:s3:::yt-data-pipeline-silver-ap-south-1-nikhil/*",
+        "arn:aws:s3:::yt-data-pipeline-gold-ap-south-1-nikhil",
+        "arn:aws:s3:::yt-data-pipeline-gold-ap-south-1-nikhil/*",
+        "arn:aws:s3:::yt-data-pipeline-script-ap-south-1-nikhil",
+        "arn:aws:s3:::yt-data-pipeline-script-ap-south-1-nikhil/*"
+      ]
+    },
+    {
+      "Sid": "SNSPublishAccess",
+      "Effect": "Allow",
+      "Action": [
+        "sns:Publish",
+        "sns:GetTopicAttributes",
+        "sns:ListTopics"
+      ],
+      "Resource": [
+        "arn:aws:sns:ap-south-1:767397729434:yt-data-pipeline-alerts-nikhil:37618a14-ad09-4982-84a8-4282cd086ac3"
+      ]
+    },
+    {
+      "Sid": "AthenaQueryAccess",
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:StopQueryExecution",
+        "athena:GetWorkGroup",
+        "athena:ListQueryExecutions"
+      ],
+      "Resource": [
+        "arn:aws:athena:ap-south-1:767397729434:workgroup/primary"
+      ]
+    },
+    {
+      "Sid": "GlueCatalogAccess",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetDatabases",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:GetPartition",
+        "glue:GetPartitions",
+        "glue:BatchCreatePartition",
+        "glue:BatchDeletePartition",
+        "glue:BatchUpdatePartition"
+      ],
+      "Resource": [
+        "arn:aws:glue:ap-south-1:767397729434:catalog",
+        "arn:aws:glue:ap-south-1:767397729434:database/yt_data_pipeline_bronze_nikhil",
+        "arn:aws:glue:ap-south-1:767397729434:database/yt_data_pipeline_silver_nikhil",
+        "arn:aws:glue:ap-south-1:767397729434:database/yt_data_pipeline_gold_nikhil",
+        "arn:aws:glue:ap-south-1:767397729434:table/yt_data_pipeline_bronze_nikhil/*",
+        "arn:aws:glue:ap-south-1:767397729434:table/yt_data_pipeline_silver_nikhil/*",
+        "arn:aws:glue:ap-south-1:767397729434:table/yt_data_pipeline_gold_nikhil/*"
+      ]
+    },
+    {
+      "Sid": "QuickSightAccess",
+      "Effect": "Allow",
+      "Action": [
+        "quicksight:CreateIngestion",
+        "quicksight:DescribeIngestion",
+        "quicksight:ListIngestions",
+        "quicksight:CancelIngestion",
+        "quicksight:DescribeDataSet",
+        "quicksight:ListDataSets"
+      ],
+      "Resource": [
+        "arn:aws:quicksight:ap-south-1:767397729434:dataset/*",
+        "arn:aws:quicksight:ap-south-1:767397729434:ingestion/*"
+      ]
+    },
+    {
+      "Sid": "CloudWatchMetricsAccess",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData",
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": [
+            "AWS/Lambda",
+            "YT-Pipeline/Custom"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "SecretsManagerAccess",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:ap-south-1:767397729434:secret:yt-pipeline/youtube-api-key-*"
+      ]
+    }
+  ]
+}
