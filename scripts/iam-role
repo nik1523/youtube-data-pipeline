@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# YouTube Data Pipeline - IAM Roles Deployment Script
+# Author: Nikhil Dhamdhere
+# Description: Deploy all IAM roles for the YouTube Data Pipeline
+
+set -e
+
+# Configuration
+REGION="ap-south-1"
+ACCOUNT_ID="account_id_here"
+PROJECT_NAME="yt-data-pipeline"
+OWNER="owner_name_here"
+
+echo "🚀 Deploying IAM Roles for YouTube Data Pipeline..."
+
+# Create Glue Service Role
+echo "📊 Creating Glue Service Role..."
+aws iam create-role \
+  --role-name yt-data-pipeline-glue-role-nikhil \
+  --assume-role-policy-document file://infrastructure/iam-roles/glue-trust-policy.json \
+  --description "IAM role for YouTube Data Pipeline Glue ETL jobs" \
+  --tags Key=Project,Value=YouTubeDataPipeline Key=Owner,Value=Nikhil Key=Environment,Value=Production
+
+# Attach AWS Managed Policy
+aws iam attach-role-policy \
+  --role-name yt-data-pipeline-glue-role-nikhil \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+
+# Create and attach custom policy
+aws iam create-policy \
+  --policy-name yt-data-pipeline-glue-execution-policy-nikhil \
+  --policy-document file://infrastructure/iam-roles/glue-execution-policy.json \
+  --description "Custom execution policy for YouTube Data Pipeline Glue jobs"
+
+aws iam attach-role-policy \
+  --role-name yt-data-pipeline-glue-role-nikhil \
+  --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/yt-data-pipeline-glue-execution-policy-nikhil
+
+# Create Step Functions Role
+echo "⚙️ Creating Step Functions Role..."
+aws iam create-role \
+  --role-name yt-data-pipeline-stepfunctions-role-nikhil \
+  --assume-role-policy-document file://infrastructure/iam-roles/stepfunctions-trust-policy.json \
+  --description "IAM role for YouTube Data Pipeline Step Functions orchestration"
+
+aws iam create-policy \
+  --policy-name yt-data-pipeline-stepfunctions-execution-policy-nikhil \
+  --policy-document file://infrastructure/iam-roles/stepfunctions-execution-policy.json \
+  --description "Custom execution policy for YouTube Data Pipeline Step Functions"
+
+aws iam attach-role-policy \
+  --role-name yt-data-pipeline-stepfunctions-role-nikhil \
+  --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/yt-data-pipeline-stepfunctions-execution-policy-nikhil
+
+# Create Lambda Execution Role
+echo "🔄 Creating Lambda Execution Role..."
+aws iam create-role \
+  --role-name yt-data-pipeline-lambda-role-nikhil \
+  --assume-role-policy-document file://infrastructure/iam-roles/lambda-trust-policy.json \
+  --description "IAM role for YouTube Data Pipeline Lambda functions"
+
+aws iam attach-role-policy \
+  --role-name yt-data-pipeline-lambda-role-nikhil \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+aws iam create-policy \
+  --policy-name yt-data-pipeline-lambda-execution-policy-nikhil \
+  --policy-document file://infrastructure/iam-roles/lambda-execution-policy.json \
+  --description "Custom execution policy for YouTube Data Pipeline Lambda functions"
+
+aws iam attach-role-policy \
+  --role-name yt-data-pipeline-lambda-role-nikhil \
+  --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/yt-data-pipeline-lambda-execution-policy-nikhil
+
+echo "✅ All IAM roles deployed successfully!"
+
+# Verify role creation
+echo "🔍 Verifying role creation..."
+aws iam get-role --role-name yt-data-pipeline-glue-role-nikhil --query 'Role.Arn' --output text
+aws iam get-role --role-name yt-data-pipeline-stepfunctions-role-nikhil --query 'Role.Arn' --output text
+aws iam get-role --role-name yt-data-pipeline-lambda-role-nikhil --query 'Role.Arn' --output text
+
+echo "🎉 IAM Roles deployment completed successfully!"
